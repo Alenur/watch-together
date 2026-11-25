@@ -1,0 +1,63 @@
+name: watch-together
+
+x-backend: &backend
+  image: watch-together-backend:local
+  build: ./backend
+  environment:
+    DATABASE_URL: "${DATABASE_URL:-postgresql+psycopg://watch:watch_local@db:5432/watch_together}"
+    APP_ORIGINS: "${APP_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}"
+    COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+    SESSION_SECONDS: "${SESSION_SECONDS:-604800}"
+    ROOM_OWNER_TIMEOUT: "${ROOM_OWNER_TIMEOUT:-120}"
+    WEB_CONCURRENCY: "${WEB_CONCURRENCY:-1}"
+    LOG_LEVEL: "${LOG_LEVEL:-info}"
+    FORWARDED_ALLOW_IPS: "*"
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-watch_together}"
+      POSTGRES_USER: "${POSTGRES_USER:-watch}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-watch_local}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    <<: *backend
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/health', timeout=3).close()"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+  frontend:
+    build: ./frontend
+    image: watch-together-frontend:local
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
